@@ -1,0 +1,8 @@
+---- Relay Matches (11 in 1 files) ----
+Main.c (src):unsigned char RelayState;
+Main.c (src):void Relay_Cont(unsigned char Relay, GPIO_PinState OnOff);
+Main.c (src):	RelayState = Eeprom_Read(EEPROM_IDX_CHANNEL_LAST_STATUS);
+Main.c (src):	Relay_Cont(RelayState, GPIO_PIN_SET);
+Main.c (src):	Relay_Cont(~RelayState, GPIO_PIN_RESET);
+Main.c (src):void Relay_Cont(unsigned char Relay, GPIO_PinState OnOff)
+Main.c (src):	HAL_GPIO_WritePin(RELAY_CTR_0_GPIO_Port, Relay, OnOff);
