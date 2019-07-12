@@ -1,0 +1,19 @@
+---- ChannelState Matches (18 in 3 files) ----
+Main.c (src):unsigned char ChannelState;
+Main.c (src):	ChannelState = Eeprom_Read(EEPROM_IDX_CHANNEL_RELAY_STATUS);
+Main.c (src):	Channel_Cont(ChannelState, RELAY_ON);
+Main.c (src):	Channel_Cont(~ChannelState, RELAY_OFF);
+Main.c (src):							Uart3TxBuf[6] = ChannelState;
+Main.c (src):									ChannelState |= Extractor;
+Main.c (src):									ChannelState &= ~Extractor;
+Main.c (src):							if(ChannelState != Eeprom_Read(EEPROM_IDX_CHANNEL_RELAY_STATUS))
+Main.c (src):								Eeprom_Write(EEPROM_IDX_CHANNEL_RELAY_STATUS, ChannelState);
+Main.c (src):							if(ChannelState != Uart3DataBuf[0])
+Main.c (src):								ChannelState = Uart3DataBuf[0];
+Main.c (src):								Eeprom_Write(EEPROM_IDX_CHANNEL_RELAY_STATUS, ChannelState);
+Main.c (src):								Channel_Cont(ChannelState, RELAY_ON);
+Main.c (src):								Channel_Cont(~ChannelState, RELAY_OFF);
+Stm32f1xx_hal_tim.c (drivers\stm32f1xx_hal_driver\src):  * @param  ChannelState : specifies the TIM Channel CCxE bit new state.
+Stm32f1xx_hal_tim.c (drivers\stm32f1xx_hal_driver\src):void TIM_CCxChannelCmd(TIM_TypeDef* TIMx, uint32_t Channel, uint32_t ChannelState)
+Stm32f1xx_hal_tim.c (drivers\stm32f1xx_hal_driver\src):  TIMx->CCER |=  (uint32_t)(ChannelState << Channel);
+Stm32f1xx_hal_tim.h (drivers\stm32f1xx_hal_driver\inc):void TIM_CCxChannelCmd(TIM_TypeDef* TIMx, uint32_t Channel, uint32_t ChannelState);
