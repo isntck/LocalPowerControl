@@ -176,7 +176,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-	Eeprom_Check_Init();
+	Eeprom_Check_Init();	// bySeo_20190712
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
