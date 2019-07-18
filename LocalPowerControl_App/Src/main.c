@@ -272,7 +272,7 @@ int main(void)
 	ReadStatusRegSht();
 	ShtCmd=0x03;	// Measure Temperature
 	SendCmdSht(ShtCmd);
-	TimerShtRead = 2000;
+	TimerShtRead = 500;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -424,7 +424,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 72;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 4;
+  htim3.Init.Period = 9;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -700,7 +700,7 @@ void Delay10us(unsigned int DelayCnt)
 		Timer10us = DelayCnt;
 		HAL_TIM_Base_Start_IT(&htim3);
 		while(Timer10us);
-		HAL_TIM_Base_Stop_IT(&htim3);
+		HAL_TIM_Base_Stop(&htim3);
 	}
 }
 
@@ -866,7 +866,7 @@ void ReadMeasureSht(void)
 			}
 			SendCmdSht(ShtCmd);	// Measure Relative Humidity
 		}
-		TimerShtRead = 2000;
+		TimerShtRead = 500;
 	}
 }
 
