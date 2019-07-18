@@ -79,7 +79,10 @@ unsigned char ChannelRelayState;
 unsigned char InputScanState;
 unsigned int InputOld;
 unsigned int InputNow;
+unsigned short ShtStatusReg;
+double TemperatureRaw;
 unsigned short Temperature;
+double HumidityRaw;
 unsigned short Humidity;
 unsigned char ShtCmd;
 GPIO_TypeDef* LedPort[8] = 
@@ -133,8 +136,9 @@ unsigned short Eeprom_Read(unsigned short Addr);
 unsigned short Eeprom_Write(unsigned short Addr, unsigned short Value);
 void GpioModeChange(GPIO_TypeDef * Port, unsigned short Pin, unsigned char InOutMode);
 void Delay10us(unsigned int DelayCnt);
-unsigned char SendSHT(unsigned char Cmd);
-void ReadSht(void);
+void ReadStatusRegSht(void);
+unsigned char SendCmdSht(unsigned char Cmd);
+void ReadMeasureSht(void);
 void Channel_Relay_Cont(unsigned char Channel, unsigned char OnOff);
 void Led_Cont(unsigned char Led, GPIO_PinState OnOff);
 void Refresh_IWDG(void);
@@ -194,10 +198,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		if(Timer10us)
 		{
 			Timer10us--;
-			if(Timer10us==0)
-			{
-				HAL_TIM_Base_Stop_IT(&htim3);
-			}
 		}
 	}
 }
@@ -266,10 +266,13 @@ int main(void)
 	MCU_Status_Led_Cont();
 	TimerDelay = 100;
 	while(TimerDelay);
-	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_RESET);	
-	ShtCmd=0x03;
-	SendSHT(ShtCmd);	// Measure Temperature
-	TimerShtRead = 5000;
+	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_RESET);
+	ShtCmd=0x07;
+	SendCmdSht(ShtCmd);	// Read Status Register
+	ReadStatusRegSht();
+	ShtCmd=0x03;	// Measure Temperature
+	SendCmdSht(ShtCmd);
+	TimerShtRead = 2000;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -280,7 +283,7 @@ int main(void)
 	Input_Scan();
 	MCU_Status_Led_Cont();
 	LedForChannel_Display();
-	ReadSht();
+	ReadMeasureSht();
 	Uart3_Parsing();
     /* USER CODE END WHILE */
 
@@ -421,7 +424,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 72;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 9;
+  htim3.Init.Period = 4;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -697,6 +700,7 @@ void Delay10us(unsigned int DelayCnt)
 		Timer10us = DelayCnt;
 		HAL_TIM_Base_Start_IT(&htim3);
 		while(Timer10us);
+		HAL_TIM_Base_Stop_IT(&htim3);
 	}
 }
 
@@ -718,7 +722,7 @@ void GpioModeChange(GPIO_TypeDef * Port, unsigned short Pin, unsigned char InOut
 	HAL_GPIO_Init(Port, &GPIO_InitStruct);
 }
 
-unsigned char SendSHT(unsigned char Cmd)
+unsigned char SendCmdSht(unsigned char Cmd)
 {
 	unsigned char Cnt = 0;
 	unsigned char Ret = 0;
@@ -737,6 +741,7 @@ unsigned char SendSHT(unsigned char Cmd)
 	SHT_DATA_HIGH;
 	Delay10us(1);
 	SHT_SCK_LOW;
+	Delay10us(1);
 	for(;Cnt<8; Cnt++)
 	{
 		if(Cmd & (0x80 >> Cnt))
@@ -748,11 +753,11 @@ unsigned char SendSHT(unsigned char Cmd)
 			SHT_DATA_LOW;
 		}
 		SHT_SCK_HIGH;
-		Delay10us(1);
-		GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);
+		Delay10us(1);		
 		SHT_SCK_LOW;
 		Delay10us(1);		
-	}	
+	}
+	GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);
 	SHT_SCK_HIGH;
 	Delay10us(1);
 	if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin) != GPIO_PIN_RESET)
@@ -761,15 +766,56 @@ unsigned char SendSHT(unsigned char Cmd)
 	}
 	SHT_SCK_LOW;
 	Delay10us(1);
-	if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin) != GPIO_PIN_SET)
+	switch(Cmd)
 	{
-		Ret |= 0x10;	// Error
+		case 0x03:
+		case 0x05:
+			if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin) != GPIO_PIN_SET)
+			{
+				Ret |= 0x10;	// Error
+			}
+			break;
+		case 0x07:
+			break;
 	}
 
 	return Ret;
 }
 
-void ReadSht(void)
+void ReadStatusRegSht(void)
+{
+	unsigned char DataCnt = 0;
+	unsigned char BitCnt = 0;
+	unsigned char ShtData[2] = {0,};
+
+	GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);	// Input Mode
+	for(;DataCnt<2; DataCnt++)
+	{
+		for(BitCnt=0; BitCnt<8; BitCnt++)
+		{
+			SHT_SCK_HIGH;
+			Delay10us(1);
+			if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin)==GPIO_PIN_SET)
+			{
+				ShtData[DataCnt] |= 0x80 >> BitCnt;
+			}
+			SHT_SCK_LOW;					
+			Delay10us(1);
+		}
+		/* Send ACK to SHT */
+		GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 1);	// Output Mode
+		SHT_DATA_LOW;
+		Delay10us(1);
+		SHT_SCK_HIGH;
+		Delay10us(1);
+		SHT_SCK_LOW;
+		GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);	// Input Mode
+		Delay10us(1);
+	}
+	ShtStatusReg = ShtData[0];
+}
+
+void ReadMeasureSht(void)
 {
 	if(TimerShtRead==0)
 	{
@@ -779,6 +825,7 @@ void ReadSht(void)
 			unsigned char DataCnt = 0;
 			unsigned char BitCnt = 0;
 			unsigned char ShtData[3] = {0,};
+			unsigned short Data = 0;
 
 			for(;DataCnt<3; DataCnt++)
 			{
@@ -793,26 +840,33 @@ void ReadSht(void)
 					SHT_SCK_LOW;					
 					Delay10us(1);
 				}
+				/* Send ACK to SHT */
 				GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 1);	// Output Mode
 				SHT_DATA_LOW;
+				Delay10us(1);
 				SHT_SCK_HIGH;
 				Delay10us(1);
 				SHT_SCK_LOW;
 				GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);	// Input Mode
+				Delay10us(1);
 			}
-			if(ShtCmd==0x03)
+			Data = ((unsigned short)ShtData[0] << 8) + (unsigned short)ShtData[1];
+			switch(ShtCmd)
 			{
-				Temperature = ((unsigned short)ShtData[0] << 8) + (unsigned short)ShtData[1];
-				ShtCmd = 0x05;
+				case 0x03:	// Measure Temperature
+					TemperatureRaw = 0.01*Data - 39.7;
+					Temperature = (unsigned short)TemperatureRaw;
+					ShtCmd = 0x05;
+					break;
+				case 0x05:	// Measure Relative Humidity
+					HumidityRaw = 0.0367*Data + (-1.5955*Data*Data)/1000000 - 2.0468;
+					Humidity = (unsigned short)HumidityRaw;
+					ShtCmd = 0x03;
+					break;
 			}
-			else
-			{
-				Humidity = ((unsigned short)ShtData[0] << 8) + (unsigned short)ShtData[1];
-				ShtCmd = 0x03;
-			}
-			SendSHT(ShtCmd);	// Measure Relative Humidity
+			SendCmdSht(ShtCmd);	// Measure Relative Humidity
 		}
-		TimerShtRead = 5000;
+		TimerShtRead = 2000;
 	}
 }
 
