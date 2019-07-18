@@ -49,17 +49,21 @@ I2C_HandleTypeDef hi2c1;
 
 IWDG_HandleTypeDef hiwdg;
 
+TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
+unsigned int TimerDelay;
 unsigned int TimerRefreshIwdg;
 unsigned int TimerInputScan;
 unsigned int TimerMcuStatusLed;
 unsigned int TimerUart3Parsing;
-unsigned int Timer1ms;
+unsigned int TimerLedForChannel;
+unsigned int Timer1ms = 1000;
 unsigned char McuStatusLedState;
-unsigned char Uart3TxBuf[UART3_TX_BUF_SIZE];
+unsigned char Uart3TxBuf[UART3_TX_BUF_SIZE] = "<RI>";
 unsigned char Uart3RxBuf[UART3_RX_BUF_SIZE];
 unsigned short Uart3RxWrCnt;
 unsigned short Uart3RxRdCnt;
@@ -74,6 +78,30 @@ unsigned char ChannelRelayState;
 unsigned char InputScanState;
 unsigned int InputOld;
 unsigned int InputNow;
+GPIO_TypeDef* LedPort[8] = 
+{
+	INPUT_DET_0_LED_GPIO_Port, 
+	INPUT_DET_1_LED_GPIO_Port,
+	INPUT_DET_2_LED_GPIO_Port,
+	INPUT_DET_3_LED_GPIO_Port,
+	INPUT_DET_4_LED_GPIO_Port,
+	INPUT_DET_5_LED_GPIO_Port,
+	INPUT_DET_6_LED_GPIO_Port,
+	INPUT_DET_7_LED_GPIO_Port,				
+};
+unsigned short LedPin[8] =
+{
+	INPUT_DET_0_LED_Pin,
+	INPUT_DET_1_LED_Pin,
+	INPUT_DET_2_LED_Pin,
+	INPUT_DET_3_LED_Pin,
+	INPUT_DET_4_LED_Pin,
+	INPUT_DET_5_LED_Pin,
+	INPUT_DET_6_LED_Pin,
+	INPUT_DET_7_LED_Pin,
+};
+unsigned char LedCnt=0;
+unsigned char LedForChannel_OnOff=0;
 
 unsigned short VirtAddVarTab[NB_OF_VAR] = {
 	0x0000,0x0001,0x0002,0x0003,0x0004,0x0005,0x0006,0x0007,0x0008,0x0009,0x000A,0x000B,0x000C,0x000D,0x000E,0x000F,	// 00~15 (for BootLoader)
@@ -94,6 +122,7 @@ static void MX_IWDG_Init(void);
 static void MX_UART4_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void Eeprom_Check_Init(void);
 unsigned short Eeprom_Read(unsigned short Addr);
@@ -103,6 +132,7 @@ void Led_Cont(unsigned char Led, GPIO_PinState OnOff);
 void Refresh_IWDG(void);
 void Input_Scan(void);
 void MCU_Status_Led_Cont(void);
+void LedForChannel_Display(void);
 void Send_BoardToPc_WithCks(unsigned char* pBuf, unsigned short Length);
 void BoardToPC_AnsJumpToApp(void);
 void Uart3_Parsing(void);
@@ -110,8 +140,12 @@ void Uart3_Parsing(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void HAL_SYSTICK_Callback(void)
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+	if(TimerDelay)
+	{
+		TimerDelay--;
+	}
 	if(TimerRefreshIwdg)
 	{
 		TimerRefreshIwdg--;
@@ -127,6 +161,10 @@ void HAL_SYSTICK_Callback(void)
 	if(TimerUart3Parsing)
 	{
 		TimerUart3Parsing--;
+	}
+	if(TimerLedForChannel)
+	{
+		TimerLedForChannel--;
 	}
 	if(Timer1ms)
 	{
@@ -185,13 +223,11 @@ int main(void)
   MX_UART4_Init();
   MX_USART3_UART_Init();
   MX_I2C1_Init();
-  /* USER CODE BEGIN 2 */		
-	HAL_UART_Receive_IT(&huart3, &Uart3RxData, 1);
-  	if(Eeprom_Read(EEPROM_IDX_JUMP_REQ)==1)
-  	{
-  		Eeprom_Write(EEPROM_IDX_JUMP_REQ, 0);
-  		BoardToPC_AnsJumpToApp();		
-  	}
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_SET);
+	HAL_TIM_Base_Start_IT(&htim2);
+	HAL_UART_Receive_IT(&huart3, &Uart3RxData, 1);	
 	ChannelRelayState = Eeprom_Read(EEPROM_IDX_CHANNEL_RELAY_STATUS);
 	Channel_Relay_Cont(ChannelRelayState, RELAY_ON);
 	Channel_Relay_Cont(~ChannelRelayState, RELAY_OFF);
@@ -202,17 +238,23 @@ int main(void)
 	Led_Cont(InputOld & 0x00000300, GPIO_PIN_RESET);	// Aux In LED On
 	Led_Cont(~InputOld & 0x00000300, GPIO_PIN_SET);	// Aux In LED Off
 	MCU_Status_Led_Cont();
+	TimerDelay = 100;
+	while(TimerDelay);
+	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_RESET);	
+//	HAL_UART_Transmit(&huart3, Uart3TxBuf, 4, 100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* USER CODE END WHILE */
 	Refresh_IWDG();
 	Input_Scan();
 	MCU_Status_Led_Cont();
+	LedForChannel_Display();
 	Uart3_Parsing();
+    /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -319,6 +361,51 @@ static void MX_IWDG_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 72;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief UART4 Initialization Function
   * @param None
   * @retval None
@@ -367,7 +454,7 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
+  huart3.Init.BaudRate = 230400;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
@@ -615,15 +702,54 @@ void MCU_Status_Led_Cont(void)
 	{
 		if(McuStatusLedState==0)
 		{
-			HAL_GPIO_WritePin(MCU_STATUS_GPIO_Port, MCU_STATUS_Pin, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(MCU_STATUS_GPIO_Port, MCU_STATUS_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(EXT_IN_1_LED_GPIO_Port, EXT_IN_1_LED_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(EXT_IN_2_LED_GPIO_Port, EXT_IN_2_LED_Pin, GPIO_PIN_RESET);
 			McuStatusLedState = 1;
 		}
 		else
 		{
-			HAL_GPIO_WritePin(MCU_STATUS_GPIO_Port, MCU_STATUS_Pin, GPIO_PIN_RESET);
-			McuStatusLedState = 0;
+			HAL_GPIO_WritePin(MCU_STATUS_GPIO_Port, MCU_STATUS_Pin, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(EXT_IN_1_LED_GPIO_Port, EXT_IN_1_LED_Pin, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(EXT_IN_2_LED_GPIO_Port, EXT_IN_2_LED_Pin, GPIO_PIN_SET);
+			McuStatusLedState = 0;			
+		}		
+		TimerMcuStatusLed = 125;
+	}
+}
+
+void LedForChannel_Display(void)
+{
+	if(TimerLedForChannel==0)
+	{
+		switch(LedForChannel_OnOff)
+		{
+			case 0:	// Led Off
+				HAL_GPIO_WritePin(LedPort[LedCnt], LedPin[LedCnt], GPIO_PIN_RESET);
+				break;
+			case 1:	// Led On
+				HAL_GPIO_WritePin(LedPort[LedCnt], LedPin[LedCnt], GPIO_PIN_SET);
+				break;
 		}
-		TimerMcuStatusLed = 250;
+		LedCnt++;
+		if(LedCnt==8)
+		{
+			LedCnt = 0;
+			switch(LedForChannel_OnOff)
+			{
+				case 0:
+					LedForChannel_OnOff = 1;
+					break;
+				case 1:
+					LedForChannel_OnOff = 0;
+					break;
+			}
+			TimerLedForChannel = 500;
+		}
+		else
+		{
+			TimerLedForChannel = 50;
+		}
 	}
 }
 
@@ -657,9 +783,11 @@ void Uart3_Parsing(void)
 {
 	if(Uart3RxRdCnt != Uart3RxWrCnt)
 	{
-		unsigned char Rx3Data = 0;		
+		unsigned char Rx3Data = 0;	
+		unsigned char TxData;
 
 		Rx3Data = Uart3RxBuf[Uart3RxRdCnt];
+
 		switch(Uart3ParsingState)
 		{
 			case 0:	// STX
