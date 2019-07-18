@@ -45,23 +45,24 @@ const unsigned char VerInfo[8] = {0x7E, 0x81, 0x96, 0xA5, 0x64, 0x42, 0, 1};	// 
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-I2C_HandleTypeDef hi2c1;
-
 IWDG_HandleTypeDef hiwdg;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 unsigned int TimerDelay;
+unsigned int TimerShtRead;
 unsigned int TimerRefreshIwdg;
 unsigned int TimerInputScan;
 unsigned int TimerMcuStatusLed;
 unsigned int TimerUart3Parsing;
 unsigned int TimerLedForChannel;
 unsigned int Timer1ms = 1000;
+unsigned int Timer10us;
 unsigned char McuStatusLedState;
 unsigned char Uart3TxBuf[UART3_TX_BUF_SIZE] = "<RI>";
 unsigned char Uart3RxBuf[UART3_RX_BUF_SIZE];
@@ -78,6 +79,9 @@ unsigned char ChannelRelayState;
 unsigned char InputScanState;
 unsigned int InputOld;
 unsigned int InputNow;
+unsigned short Temperature;
+unsigned short Humidity;
+unsigned char ShtCmd;
 GPIO_TypeDef* LedPort[8] = 
 {
 	INPUT_DET_0_LED_GPIO_Port, 
@@ -121,12 +125,16 @@ static void MX_GPIO_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_UART4_Init(void);
 static void MX_USART3_UART_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void Eeprom_Check_Init(void);
 unsigned short Eeprom_Read(unsigned short Addr);
 unsigned short Eeprom_Write(unsigned short Addr, unsigned short Value);
+void GpioModeChange(GPIO_TypeDef * Port, unsigned short Pin, unsigned char InOutMode);
+void Delay10us(unsigned int DelayCnt);
+unsigned char SendSHT(unsigned char Cmd);
+void ReadSht(void);
 void Channel_Relay_Cont(unsigned char Channel, unsigned char OnOff);
 void Led_Cont(unsigned char Led, GPIO_PinState OnOff);
 void Refresh_IWDG(void);
@@ -142,36 +150,54 @@ void Uart3_Parsing(void);
 /* USER CODE BEGIN 0 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	if(TimerDelay)
+	if(htim->Instance == TIM2)
 	{
-		TimerDelay--;
-	}
-	if(TimerRefreshIwdg)
-	{
-		TimerRefreshIwdg--;
-	}
-	if(TimerInputScan)
-	{
-		TimerInputScan--;
-	}
-	if(TimerMcuStatusLed)
-	{
-		TimerMcuStatusLed--;
-	}
-	if(TimerUart3Parsing)
-	{
-		TimerUart3Parsing--;
-	}
-	if(TimerLedForChannel)
-	{
-		TimerLedForChannel--;
-	}
-	if(Timer1ms)
-	{
-		Timer1ms--;
-		if(Timer1ms==0)
+		if(TimerDelay)
 		{
-			Timer1ms = 1000;
+			TimerDelay--;
+		}
+		if(TimerShtRead)
+		{
+			TimerShtRead--;
+		}
+		if(TimerRefreshIwdg)
+		{
+			TimerRefreshIwdg--;
+		}
+		if(TimerInputScan)
+		{
+			TimerInputScan--;
+		}
+		if(TimerMcuStatusLed)
+		{
+			TimerMcuStatusLed--;
+		}
+		if(TimerUart3Parsing)
+		{
+			TimerUart3Parsing--;
+		}
+		if(TimerLedForChannel)
+		{
+			TimerLedForChannel--;
+		}
+		if(Timer1ms)
+		{
+			Timer1ms--;
+			if(Timer1ms==0)
+			{
+				Timer1ms = 1000;
+			}
+		}
+	}
+	if(htim->Instance == TIM3)
+	{
+		if(Timer10us)
+		{
+			Timer10us--;
+			if(Timer10us==0)
+			{
+				HAL_TIM_Base_Stop_IT(&htim3);
+			}
 		}
 	}
 }
@@ -222,8 +248,8 @@ int main(void)
   MX_IWDG_Init();
   MX_UART4_Init();
   MX_USART3_UART_Init();
-  MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_SET);
 	HAL_TIM_Base_Start_IT(&htim2);
@@ -241,7 +267,9 @@ int main(void)
 	TimerDelay = 100;
 	while(TimerDelay);
 	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_RESET);	
-//	HAL_UART_Transmit(&huart3, Uart3TxBuf, 4, 100);
+	ShtCmd=0x03;
+	SendSHT(ShtCmd);	// Measure Temperature
+	TimerShtRead = 5000;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -252,6 +280,7 @@ int main(void)
 	Input_Scan();
 	MCU_Status_Led_Cont();
 	LedForChannel_Display();
+	ReadSht();
 	Uart3_Parsing();
     /* USER CODE END WHILE */
 
@@ -296,40 +325,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 100000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
@@ -402,6 +397,51 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 72;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 9;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
@@ -498,6 +538,9 @@ static void MX_GPIO_Init(void)
                           |INPUT_DET_0_LED_Pin|INPUT_DET_1_LED_Pin|INPUT_DET_2_LED_Pin|INPUT_DET_3_LED_Pin 
                           |INPUT_DET_4_LED_Pin|INPUT_DET_5_LED_Pin|INPUT_DET_6_LED_Pin|INPUT_DET_7_LED_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, TEMP_HUMI_SCK_Pin|TEMP_HUMI_SDA_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : RELAY_CTR_2_Pin RELAY_CTR_3_Pin RELAY_CTR_4_Pin RELAY_CTR_5_Pin 
                            RELAY_CTR_6_Pin RELAY_CTR_7_Pin RELAY_CTR_0_Pin RELAY_CTR_1_Pin */
   GPIO_InitStruct.Pin = RELAY_CTR_2_Pin|RELAY_CTR_3_Pin|RELAY_CTR_4_Pin|RELAY_CTR_5_Pin 
@@ -589,6 +632,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : TEMP_HUMI_SCK_Pin TEMP_HUMI_SDA_Pin */
+  GPIO_InitStruct.Pin = TEMP_HUMI_SCK_Pin|TEMP_HUMI_SDA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
 }
 
 /* USER CODE BEGIN 4 */
@@ -638,6 +688,132 @@ unsigned short Eeprom_Write(unsigned short Addr, unsigned short Value)
 	Ret = EE_WriteVariable(Addr, Value);
 	HAL_FLASH_Lock();
 	return Ret;
+}
+
+void Delay10us(unsigned int DelayCnt)
+{
+	if(DelayCnt)
+	{
+		Timer10us = DelayCnt;
+		HAL_TIM_Base_Start_IT(&htim3);
+		while(Timer10us);
+	}
+}
+
+void GpioModeChange(GPIO_TypeDef * Port, unsigned short Pin, unsigned char InOutMode)
+{
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+	GPIO_InitStruct.Pin = Pin;
+	switch(InOutMode)
+	{
+		case 0:	// Input Mode			
+			GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+			break;
+		case 1:	// Output Mode
+			GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+			GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+			break;
+	}
+	HAL_GPIO_Init(Port, &GPIO_InitStruct);
+}
+
+unsigned char SendSHT(unsigned char Cmd)
+{
+	unsigned char Cnt = 0;
+	unsigned char Ret = 0;
+
+	GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 1);
+	SHT_DATA_HIGH;	
+	Delay10us(1);
+	SHT_SCK_HIGH;
+	Delay10us(1);
+	SHT_DATA_LOW;
+	Delay10us(1);
+	SHT_SCK_LOW;
+	Delay10us(2);
+	SHT_SCK_HIGH;
+	Delay10us(1);
+	SHT_DATA_HIGH;
+	Delay10us(1);
+	SHT_SCK_LOW;
+	for(;Cnt<8; Cnt++)
+	{
+		if(Cmd & (0x80 >> Cnt))
+		{
+			SHT_DATA_HIGH;
+		}
+		else
+		{
+			SHT_DATA_LOW;
+		}
+		SHT_SCK_HIGH;
+		Delay10us(1);
+		GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);
+		SHT_SCK_LOW;
+		Delay10us(1);		
+	}	
+	SHT_SCK_HIGH;
+	Delay10us(1);
+	if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin) != GPIO_PIN_RESET)
+	{
+		Ret |= 0x01;	// NACK
+	}
+	SHT_SCK_LOW;
+	Delay10us(1);
+	if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin) != GPIO_PIN_SET)
+	{
+		Ret |= 0x10;	// Error
+	}
+
+	return Ret;
+}
+
+void ReadSht(void)
+{
+	if(TimerShtRead==0)
+	{
+		GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);	// Input Mode
+		if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin)==GPIO_PIN_RESET)
+		{
+			unsigned char DataCnt = 0;
+			unsigned char BitCnt = 0;
+			unsigned char ShtData[3] = {0,};
+
+			for(;DataCnt<3; DataCnt++)
+			{
+				for(BitCnt=0; BitCnt<8; BitCnt++)
+				{
+					SHT_SCK_HIGH;
+					Delay10us(1);
+					if(HAL_GPIO_ReadPin(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin)==GPIO_PIN_SET)
+					{
+						ShtData[DataCnt] |= 0x80 >> BitCnt;
+					}
+					SHT_SCK_LOW;					
+					Delay10us(1);
+				}
+				GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 1);	// Output Mode
+				SHT_DATA_LOW;
+				SHT_SCK_HIGH;
+				Delay10us(1);
+				SHT_SCK_LOW;
+				GpioModeChange(TEMP_HUMI_SDA_GPIO_Port, TEMP_HUMI_SDA_Pin, 0);	// Input Mode
+			}
+			if(ShtCmd==0x03)
+			{
+				Temperature = ((unsigned short)ShtData[0] << 8) + (unsigned short)ShtData[1];
+				ShtCmd = 0x05;
+			}
+			else
+			{
+				Humidity = ((unsigned short)ShtData[0] << 8) + (unsigned short)ShtData[1];
+				ShtCmd = 0x03;
+			}
+			SendSHT(ShtCmd);	// Measure Relative Humidity
+		}
+		TimerShtRead = 5000;
+	}
 }
 
 void Channel_Relay_Cont(unsigned char Channel, unsigned char OnOff)
@@ -784,7 +960,6 @@ void Uart3_Parsing(void)
 	if(Uart3RxRdCnt != Uart3RxWrCnt)
 	{
 		unsigned char Rx3Data = 0;	
-		unsigned char TxData;
 
 		Rx3Data = Uart3RxBuf[Uart3RxRdCnt];
 
