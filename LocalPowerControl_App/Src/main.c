@@ -25,7 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "eeprom.h"
 #pragma location=".Ver_Info"
-const unsigned char VerInfo[8] = {0x7E, 0x81, 0x96, 0xA5, 0x64, 0x42, 0, 1};	// Parsing Flag + Version 0.1
+const unsigned char VerInfo[8] = {0x7E, 0x81, 0x96, 0xA5, 0x64, 0x42, 1, 0};	// Parsing Flag + Version 0.1
 #pragma location=".App_Start"
 /* USER CODE END Includes */
 
@@ -60,12 +60,15 @@ unsigned int TimerRefreshIwdg;
 unsigned int TimerInputScan;
 unsigned int TimerMcuStatusLed;
 unsigned int TimerUart3Parsing;
+unsigned int TimerUart4Parsing;
 unsigned int TimerLedForChannel;
 unsigned int Timer1ms = 1000;
 unsigned int Timer10us;
 unsigned char McuStatusLedState;
-unsigned char Uart3TxBuf[UART3_TX_BUF_SIZE] = "<RI>";
+
+unsigned char Uart3TxBuf[UART3_TX_BUF_SIZE];
 unsigned char Uart3RxBuf[UART3_RX_BUF_SIZE];
+unsigned char Uart3DataBuf[UART3_DATA_BUF_SIZE];
 unsigned short Uart3RxWrCnt;
 unsigned short Uart3RxRdCnt;
 unsigned char Uart3RxData;
@@ -74,7 +77,19 @@ unsigned short Uart3Cks;
 unsigned short Uart3DataLength;
 unsigned short Uart3DataCnt;
 unsigned char Uart3Cmd;
-unsigned char Uart3DataBuf[UART3_DATA_BUF_SIZE];
+
+unsigned char Uart4TxBuf[UART4_TX_BUF_SIZE];
+unsigned char Uart4RxBuf[UART4_RX_BUF_SIZE];
+unsigned char Uart4DataBuf[UART4_DATA_BUF_SIZE];
+unsigned char Uart4RxWrCnt;
+unsigned char Uart4RxRdCnt;
+unsigned char Uart4RxData;
+unsigned char Uart4ParsingState;
+unsigned char Uart4Cks;
+unsigned char Uart4DataLength;
+unsigned char Uart4DataCnt;
+unsigned char Uart4Cmd;
+
 unsigned char ChannelRelayState;
 unsigned char InputScanState;
 unsigned int InputOld;
@@ -146,8 +161,9 @@ void Input_Scan(void);
 void MCU_Status_Led_Cont(void);
 void LedForChannel_Display(void);
 void Send_BoardToPc_WithCks(unsigned char* pBuf, unsigned short Length);
-void BoardToPC_AnsJumpToApp(void);
-void Uart3_Parsing(void);
+void Send_BoardToPwrMon_WithCks(unsigned char* pBuf, unsigned char Length);
+void Uart3_Ethernet_Parsing(void);
+void Uart4_PwrMon_Parsing(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -179,6 +195,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		if(TimerUart3Parsing)
 		{
 			TimerUart3Parsing--;
+		}
+		if(TimerUart4Parsing)
+		{
+			TimerUart4Parsing--;
 		}
 		if(TimerLedForChannel)
 		{
@@ -212,6 +232,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		if(Uart3RxWrCnt==UART3_RX_BUF_SIZE)
 		{
 			Uart3RxWrCnt = 0;
+		}
+	}
+	if(huart->Instance==UART4)
+	{
+		Uart4RxBuf[Uart4RxWrCnt] = Uart4RxData;
+		HAL_UART_Receive_IT(&huart4, &Uart4RxData, 1);
+		Uart4RxWrCnt++;
+		if(Uart4RxWrCnt==UART4_RX_BUF_SIZE)
+		{
+			Uart4RxWrCnt = 0;
 		}
 	}
 }
@@ -253,7 +283,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
 	HAL_GPIO_WritePin(LAN_RESET_GPIO_Port, LAN_RESET_Pin, GPIO_PIN_SET);
 	HAL_TIM_Base_Start_IT(&htim2);
-	HAL_UART_Receive_IT(&huart3, &Uart3RxData, 1);	
+	HAL_UART_Receive_IT(&huart3, &Uart3RxData, 1);
+	HAL_UART_Receive_IT(&huart4, &Uart4RxData, 1);
 	ChannelRelayState = Eeprom_Read(EEPROM_IDX_CHANNEL_RELAY_STATUS);
 	Channel_Relay_Cont(ChannelRelayState, RELAY_ON);
 	Channel_Relay_Cont(~ChannelRelayState, RELAY_OFF);
@@ -273,6 +304,12 @@ int main(void)
 	ShtCmd=0x03;	// Measure Temperature
 	SendCmdSht(ShtCmd);
 	TimerShtRead = 500;
+	Uart4TxBuf[2] = 0x41;
+	Uart4TxBuf[3] = 0x00;
+	Uart4TxBuf[4] = 0x02;
+	Uart4TxBuf[5] = 0x4E;
+	Uart4TxBuf[6] = 0x20;
+	Send_BoardToPwrMon_WithCks(Uart4TxBuf, 8);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -284,7 +321,8 @@ int main(void)
 	MCU_Status_Led_Cont();
 	LedForChannel_Display();
 	ReadMeasureSht();
-	Uart3_Parsing();
+	Uart3_Ethernet_Parsing();
+	Uart4_PwrMon_Parsing();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -497,7 +535,7 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 230400;
+  huart3.Init.BaudRate = 115200;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
@@ -998,18 +1036,26 @@ void Send_BoardToPc_WithCks(unsigned char* pBuf, unsigned short Length)
 	}
 	*(unsigned short*)(pBuf+Length+6) = CheckSum;
 	pBuf[Length+8] = END_BOARD_TO_PC;
-
 	HAL_UART_Transmit(&huart3, pBuf, Length+9, 100);
 }
 
-void BoardToPC_AnsJumpToApp(void)
+void Send_BoardToPwrMon_WithCks(unsigned char* pBuf, unsigned char Length)
 {
-	Uart3TxBuf[5] = BOARD_TO_PC_ANS_JUMP_TO_APP;
-	Uart3TxBuf[6] = 0;
-	Send_BoardToPc_WithCks(Uart3TxBuf, 1);
+	unsigned char Cnt = 0;
+	unsigned short CheckSum = 0;
+
+	pBuf[0] = 0xA5;	// Header
+	pBuf[1] = Length;
+	for(Cnt=0; Cnt<(Length-1); Cnt++)
+	{
+		CheckSum += pBuf[Cnt];
+	}
+	pBuf[Length-1] = CheckSum;
+
+	HAL_UART_Transmit(&huart4, pBuf, Length, 100);
 }
 
-void Uart3_Parsing(void)
+void Uart3_Ethernet_Parsing(void)
 {
 	if(Uart3RxRdCnt != Uart3RxWrCnt)
 	{
@@ -1125,8 +1171,8 @@ void Uart3_Parsing(void)
 					{
 						case PC_TO_BOARD_REQ_VER:
 							Uart3TxBuf[5] = BOARD_TO_PC_ANS_VER;
-							*(unsigned short*)(Uart3TxBuf+6) = *(unsigned short*)(0x08007800+8);
-							Uart3TxBuf[8] = 0;	// BootLoader Mode
+							*(unsigned short*)(Uart3TxBuf+6) = *(unsigned short*)(0x08007800+6);
+							Uart3TxBuf[8] = 1;	// Application Mode
 							Send_BoardToPc_WithCks(Uart3TxBuf, 3);
 							break;
 						case PC_TO_BOARD_REQ_RESET:
@@ -1204,6 +1250,83 @@ void Uart3_Parsing(void)
 		if(Uart3ParsingState != 0)
 		{
 			Uart3ParsingState = 0;
+		}
+	}
+}
+
+void Uart4_PwrMon_Parsing(void)
+{
+	if(Uart4RxRdCnt != Uart4RxWrCnt)
+	{
+		unsigned char Rx4Data = 0;	
+
+		Rx4Data = Uart4RxBuf[Uart4RxRdCnt];
+
+		switch(Uart4ParsingState)
+		{
+			case 0:	// Header
+				if(Rx4Data==0xA5)
+				{
+					Uart4Cks = Rx4Data;
+					Uart4ParsingState++;
+					TimerUart4Parsing = UART4_PARSING_TIMEOUT;
+				}
+				break;
+			case 1:	// Length
+				if(Rx4Data < 0x30)	// 48Byte
+				{
+					Uart4Cks += Rx4Data;
+					Uart4DataLength = Rx4Data - 4;	// exclusion of Header, Length, Command and Checksum
+					Uart4DataCnt = 0;
+					Uart4ParsingState++;
+					TimerUart4Parsing = UART4_PARSING_TIMEOUT;
+				}
+				else
+				{
+					Uart4ParsingState = 0;
+					TimerUart4Parsing = 0;
+				}
+				break;
+			case 2:	// Cmd
+				Uart4Cks += Rx4Data;
+				Uart4Cmd = Rx4Data;
+				Uart4ParsingState++;
+				TimerUart4Parsing = UART4_PARSING_TIMEOUT;
+				break;
+			case 3:	// Data				
+				Uart4Cks += Rx4Data;
+				Uart4DataBuf[Uart4DataCnt] = Rx4Data;
+				Uart4DataCnt++;
+				if(Uart4DataCnt==Uart4DataLength)
+				{
+					Uart4ParsingState++;
+				}
+				TimerUart4Parsing = UART4_PARSING_TIMEOUT;
+				break;
+			case 4:	// Checksum
+				if(Rx4Data==Uart4Cks)
+				{
+					switch(Uart4Cmd)
+					{
+						default:
+							break;
+					}
+				}
+				Uart4ParsingState = 0;
+				TimerUart4Parsing = 0;
+				break;
+		}
+		Uart4RxRdCnt++;
+		if(Uart4RxRdCnt==UART4_RX_BUF_SIZE)
+		{
+			Uart4RxRdCnt = 0;
+		}
+	}
+	if(TimerUart4Parsing==0)
+	{
+		if(Uart4ParsingState != 0)
+		{
+			Uart4ParsingState = 0;
 		}
 	}
 }
