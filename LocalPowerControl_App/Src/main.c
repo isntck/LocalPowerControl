@@ -725,9 +725,12 @@ unsigned short Eeprom_Write(unsigned short Addr, unsigned short Value)
 {
 	unsigned short Ret;
 
-	HAL_FLASH_Unlock();
-	Ret = EE_WriteVariable(Addr, Value);
-	HAL_FLASH_Lock();
+	if(Eeprom_Read(Addr) != Value)
+	{
+		HAL_FLASH_Unlock();
+		Ret = EE_WriteVariable(Addr, Value);
+		HAL_FLASH_Lock();
+	}
 	return Ret;
 }
 

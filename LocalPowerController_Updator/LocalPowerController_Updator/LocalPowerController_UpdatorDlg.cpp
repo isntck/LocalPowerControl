@@ -96,6 +96,10 @@ CLocalPowerController_UpdatorDlg::CLocalPowerController_UpdatorDlg(CWnd* pParent
 	, mUpdateFile_Crc16(0)
 	, mStrCombo_ip(_T(""))
 	, m_pDataSocket(NULL)
+	, mRxCks(0)
+	, mRxDataLength(0)
+	, mRxDataCnt(0)
+	, mRxCmd(0)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -118,6 +122,7 @@ BEGIN_MESSAGE_MAP(CLocalPowerController_UpdatorDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BTN_RESET, &CLocalPowerController_UpdatorDlg::OnBnClickedBtnReset)
 	ON_BN_CLICKED(IDC_BTN_GET_VER, &CLocalPowerController_UpdatorDlg::OnBnClickedBtnGetVer)
 	ON_BN_CLICKED(IDC_BTN_CLEAR_LOG, &CLocalPowerController_UpdatorDlg::OnBnClickedBtnClearLog)
+	ON_WM_TIMER()
 END_MESSAGE_MAP()
 
 
@@ -163,7 +168,7 @@ BOOL CLocalPowerController_UpdatorDlg::OnInitDialog()
 		Str.Format(_T("192.168.0.%d"), Cnt);
 		m_cCombo_ip.AddString(Str);
 	}
-	mStrCombo_ip = _T("192.168.0.201");
+	mStrCombo_ip = _T("192.168.0.202");
 	UpdateData(FALSE);
 
 	return TRUE;  // 포커스를 컨트롤에 설정하지 않으면 TRUE를 반환합니다.
@@ -220,7 +225,7 @@ HCURSOR CLocalPowerController_UpdatorDlg::OnQueryDragIcon()
 
 
 
-void CLocalPowerController_UpdatorDlg::ReceiveParsing(BYTE* ReceiveBuf, int Length)
+void CLocalPowerController_UpdatorDlg::ReceiveParsing(BYTE* pReceiveBuf, int Length)
 {
 	UINT16 Cnt1;
 	UINT16 Cnt2;
@@ -229,14 +234,155 @@ void CLocalPowerController_UpdatorDlg::ReceiveParsing(BYTE* ReceiveBuf, int Leng
 	CString Str2;
 	UINT16 CheckSum;
 	BYTE EndParsing = 0;
-
-	Str1 = _T("RX :\r\n");
+		
+	Str1.Format(_T("RX(%d) :\r\n"), Length);
 	for (Cnt1 = 0; Cnt1 < Length; Cnt1++)
 	{
-		Str2.Format(_T(" %02X"), ReceiveBuf[Cnt1]);
+		Str2.Format(_T(" %02X"), pReceiveBuf[Cnt1]);
 		Str1 += Str2;
+		if (((Cnt1 + 1) % 16) == 0)
+		{
+			Str1 += _T("\r\n");
+		}		
 	}
 	Str1 += _T("\r\n");
+
+	for (Cnt1 = 0; Cnt1 < Length; Cnt1++)
+	{
+		ReadData = pReceiveBuf[Cnt1];
+		switch (mParsingState)
+		{
+		case 0:	// STX
+			if (ReadData == 0x25)
+			{
+				mParsingState = 1;
+				mRxCks = ReadData;
+				KillTimer(TIMER_ID_RX_PARSING);
+				SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			}
+			break;
+		case 1:	// Destination Addr
+			if (ReadData == 0x00)
+			{
+				mParsingState = 2;
+				mRxCks += ReadData;
+				KillTimer(TIMER_ID_RX_PARSING);
+				SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			}
+			else
+			{				
+				mParsingState = 0;
+				KillTimer(TIMER_ID_RX_PARSING);
+			}
+			break;
+		case 2:	// Source Address
+			if (ReadData == 0x01)
+			{
+				mParsingState = 3;
+				mRxCks += ReadData;
+				KillTimer(TIMER_ID_RX_PARSING);
+				SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			}
+			else
+			{
+				mParsingState = 0;
+				KillTimer(TIMER_ID_RX_PARSING);
+			}
+			break;
+		case 3:	// Length(LSB)
+			mRxDataLength = ReadData;
+			mParsingState = 4;
+			mRxCks += ReadData;
+			KillTimer(TIMER_ID_RX_PARSING);
+			SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			break;
+		case 4:	// Length(MSB)
+			mRxDataLength |= (UINT16)ReadData << 8;
+			mParsingState = 5;
+			mRxDataCnt = 0;
+			mRxCks += ReadData;
+			KillTimer(TIMER_ID_RX_PARSING);
+			SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			break;
+		case 5:	// Cmd
+			if (ReadData >= 0xB0 && ReadData <= 0xBF)
+			{
+				mRxCmd = ReadData;
+				mParsingState = 6;
+				mRxCks += ReadData;
+				KillTimer(TIMER_ID_RX_PARSING);
+				SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			}
+			else
+			{
+				mParsingState = 0;
+				KillTimer(TIMER_ID_RX_PARSING);
+			}
+			break;
+		case 6:	// Data
+			mRxDataField[mRxDataCnt] = ReadData;
+			mRxCks += ReadData;
+			mRxDataCnt++;
+			if (mRxDataCnt == mRxDataLength)
+			{
+				mParsingState = 7;
+			}
+			KillTimer(TIMER_ID_RX_PARSING);
+			SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			break;
+		case 7:	// CheckSum(LSB)
+			if (ReadData == (mRxCks & 0x00FF))
+			{
+				mParsingState = 8;
+				KillTimer(TIMER_ID_RX_PARSING);
+				SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			}
+			else
+			{
+				mParsingState = 0;
+				KillTimer(TIMER_ID_RX_PARSING);
+			}
+			break;
+		case 8:	// CheckSum(MSB)
+			if (ReadData == (mRxCks >> 8))
+			{
+				mParsingState = 9;
+				KillTimer(TIMER_ID_RX_PARSING);
+				SetTimer(TIMER_ID_RX_PARSING, 100, 0);
+			}
+			else
+			{
+				mParsingState = 0;
+				KillTimer(TIMER_ID_RX_PARSING);
+			}
+			break;
+		case 9:	// End
+			if (ReadData == 0x4A)
+			{
+				switch (mRxCmd)
+				{
+				case 0xB0:	// Get Ver
+					Str2.Format(_T("\r\nVer:%d.%d\r\n"), mRxDataField[1], mRxDataField[0]);
+					Str1 += Str2;
+					if (mRxDataField[2] == 1)
+					{
+						Str2.Format(_T("Application Active\r\n"));
+					}
+					else
+					{
+						Str2.Format(_T("BootLoader Active\r\n"));
+					}
+					Str1 += Str2;
+					break;
+				case 0xB1:	// Reset
+					break;
+				}
+			}
+			mParsingState = 0;
+			KillTimer(TIMER_ID_RX_PARSING);
+			break;
+		}
+	}
 	LogAdd(StrWithTime(Str1, 0));
 }
 
@@ -420,8 +566,6 @@ void CLocalPowerController_UpdatorDlg::SendWithCks(BYTE* pData, UINT16 Length)
 		CString Str1, Str2;
 
 		pData[0] = 0x7E;	// STX
-		pData[1] = 0x01;	// Destination Address(Target Board)
-		pData[2] = 0x00;	// Source Address(PC)
 		*(UINT16*)(pData + 3) = Length;
 		for (Cnt1 = 0; Cnt1 < (Length+6); Cnt1++)
 		{
@@ -430,7 +574,7 @@ void CLocalPowerController_UpdatorDlg::SendWithCks(BYTE* pData, UINT16 Length)
 		*(UINT16*)(pData + Length + 6) = CheckSum;
 		pData[Length + 8] = 0x81;	// END
 		m_pDataSocket->Send(pData, Length + 9);
-		Str1 = _T("TX :\r\n");
+		Str1.Format(_T("TX(%d) :\r\n"), Length+9);
 		for (Cnt1 = 0; Cnt1 < (Length + 9); Cnt1++)
 		{
 			Str2.Format(_T(" %02X"), pData[Cnt1]);
@@ -479,4 +623,21 @@ void CLocalPowerController_UpdatorDlg::OnBnClickedBtnClearLog()
 	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
 	m_cEdit_Log.SetWindowTextA(_T(""));
 	LogAdd(StrWithTime(_T("\r\n"), 0));
+}
+
+
+void CLocalPowerController_UpdatorDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	// TODO: 여기에 메시지 처리기 코드를 추가 및/또는 기본값을 호출합니다.
+	CString Str;
+	switch (nIDEvent)
+	{
+	case TIMER_ID_RX_PARSING:
+		KillTimer(TIMER_ID_RX_PARSING);
+		mParsingState = 0;
+		LogAdd(StrWithTime(_T("수신 중단 됨\r\n"), 0));
+		break;
+	}
+
+	CDialogEx::OnTimer(nIDEvent);
 }

@@ -468,7 +468,7 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 230400;
+  huart3.Init.BaudRate = 115200;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
@@ -646,11 +646,15 @@ unsigned short Eeprom_Read(unsigned short Addr)
 
 unsigned short Eeprom_Write(unsigned short Addr, unsigned short Value)
 {
-	unsigned short Ret;
+	unsigned short Ret = 0;
 
-	HAL_FLASH_Unlock();
-	Ret = EE_WriteVariable(Addr, Value);
-	HAL_FLASH_Lock();
+	if(Eeprom_Read(Addr) != Value)
+	{
+		HAL_FLASH_Unlock();
+		Ret = EE_WriteVariable(Addr, Value);
+		HAL_FLASH_Lock();
+	}
+
 	return Ret;
 }
 

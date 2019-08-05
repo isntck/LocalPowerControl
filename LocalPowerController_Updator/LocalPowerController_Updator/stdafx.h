@@ -38,6 +38,7 @@
 #define RX_BUF_SIZE		(2100)
 #define TX_BUF_SIZE		(2100)
 #define SERVER_TCP_PORT	(7000)
+#define TIMER_ID_RX_PARSING	(1)
 #endif
 
 #ifdef _UNICODE
